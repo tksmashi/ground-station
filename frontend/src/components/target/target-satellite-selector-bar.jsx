@@ -1206,7 +1206,7 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                             Step 1 · Target
                         </Typography>
                         <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 1 }}>
-                            Select target type and choose a target.
+                            Select a target type and choose a satellite, mission, or body.
                         </Typography>
                         <FormControl size="small" fullWidth sx={{ mb: 1 }}>
                             <InputLabel id="create-target-type-label">Target Type</InputLabel>
@@ -1252,8 +1252,8 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                                 renderInput={(params) => (
                                     <TextField
                                         {...params}
-                                        label="Satellite"
-                                        placeholder="Search by name or NORAD ID"
+                                        label="Satellite Target"
+                                        placeholder="Search satellite by name or NORAD ID"
                                         slotProps={{
                                             input: {
                                                 ...params.InputProps,
@@ -1283,6 +1283,17 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                                 }}
                                 isOptionEqualToValue={(option, value) => option?.command === value?.command}
                                 getOptionLabel={(option) => option?.display_name || option?.command || ''}
+                                filterOptions={(options, state) => {
+                                    const keyword = String(state?.inputValue || '').trim().toLowerCase();
+                                    if (!keyword) {
+                                        return options;
+                                    }
+                                    return options.filter((option) => {
+                                        const name = String(option?.display_name || '').trim().toLowerCase();
+                                        const command = String(option?.command || '').trim().toLowerCase();
+                                        return name.includes(keyword) || command.includes(keyword);
+                                    });
+                                }}
                                 renderOption={(props, option) => (
                                     <Box component="li" {...props} sx={{ display: 'flex', justifyContent: 'space-between', gap: 1 }}>
                                         <Typography variant="body2" noWrap>{option?.display_name || option?.command}</Typography>
@@ -1297,8 +1308,8 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                                 renderInput={(params) => (
                                     <TextField
                                         {...params}
-                                        label="Mission"
-                                        placeholder="Select mission target"
+                                        label="Mission Target"
+                                        placeholder="Search mission name or command"
                                         helperText={catalogError || ''}
                                         slotProps={{
                                             input: {
@@ -1316,33 +1327,78 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                             />
                         )}
                         {createTargetType === TARGET_TYPES.BODY && (
-                            <FormControl size="small" fullWidth>
-                                <InputLabel id="create-target-body-label">Body</InputLabel>
-                                <Select
-                                    labelId="create-target-body-label"
-                                    value={createSelectedBodyId}
-                                    label="Body"
-                                    onChange={(event) => {
-                                        setCreateSelectedBodyId(String(event.target.value || '').toLowerCase());
-                                        if (createDialogError) {
-                                            setCreateDialogError('');
-                                        }
-                                    }}
-                                >
-                                    {bodyCatalogOptions.map((entry) => (
-                                        <MenuItem key={entry.body_id} value={entry.body_id}>
-                                            {entry.name}
-                                            {entry.body_type ? ` (${entry.body_type})` : ''}
-                                            {entry.parent_body_id ? ` · ${entry.parent_body_id}` : ''}
-                                        </MenuItem>
-                                    ))}
-                                </Select>
-                                {bodyCatalogError && (
-                                    <Typography variant="caption" color="error" sx={{ mt: 0.5 }}>
-                                        {bodyCatalogError}
-                                    </Typography>
+                            <Autocomplete
+                                size="small"
+                                options={bodyCatalogOptions}
+                                loading={bodyCatalogLoading}
+                                value={bodyCatalogOptions.find((entry) => entry.body_id === createSelectedBodyId) || null}
+                                onChange={(event, value) => {
+                                    setCreateSelectedBodyId(String(value?.body_id || '').toLowerCase());
+                                    if (createDialogError) {
+                                        setCreateDialogError('');
+                                    }
+                                }}
+                                isOptionEqualToValue={(option, value) => option?.body_id === value?.body_id}
+                                getOptionLabel={(option) => option?.name || option?.body_id || ''}
+                                filterOptions={(options, state) => {
+                                    const keyword = String(state?.inputValue || '').trim().toLowerCase();
+                                    if (!keyword) {
+                                        return options;
+                                    }
+                                    return options.filter((option) => {
+                                        const name = String(option?.name || '').trim().toLowerCase();
+                                        const bodyId = String(option?.body_id || '').trim().toLowerCase();
+                                        const bodyType = String(option?.body_type || '').trim().toLowerCase();
+                                        return (
+                                            name.includes(keyword)
+                                            || bodyId.includes(keyword)
+                                            || bodyType.includes(keyword)
+                                        );
+                                    });
+                                }}
+                                renderOption={(props, option) => (
+                                    <Box component="li" {...props} sx={{ display: 'flex', justifyContent: 'space-between', gap: 1 }}>
+                                        <Typography variant="body2" noWrap sx={{ flex: 1 }}>
+                                            {option?.name || option?.body_id}
+                                        </Typography>
+                                        <Chip
+                                            size="small"
+                                            label={option?.body_id || '-'}
+                                            variant="outlined"
+                                            sx={{ height: 18, fontSize: '0.62rem', fontFamily: 'monospace', flexShrink: 0 }}
+                                        />
+                                    </Box>
                                 )}
-                            </FormControl>
+                                renderInput={(params) => (
+                                    <TextField
+                                        {...params}
+                                        label="Body Target"
+                                        placeholder="Search body name or ID"
+                                        helperText={bodyCatalogError || ''}
+                                        slotProps={{
+                                            input: {
+                                                ...params.InputProps,
+                                                endAdornment: (
+                                                    <>
+                                                        {bodyCatalogLoading ? <CircularProgress color="inherit" size={18} /> : null}
+                                                        {params.InputProps.endAdornment}
+                                                    </>
+                                                ),
+                                            },
+                                        }}
+                                    />
+                                )}
+                            />
+                        )}
+                        {createTargetType === TARGET_TYPES.BODY && bodyCatalogError && (
+                            <Typography variant="caption" color="error" sx={{ mt: 0.5 }}>
+                                {bodyCatalogError}
+                            </Typography>
+                        )}
+                        {createTargetType === TARGET_TYPES.BODY && !bodyCatalogError && bodyCatalogLoading && (
+                            <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
+                                Loading body catalog...
+                            </Typography>
                         )}
                     </Box>
 
@@ -1671,7 +1727,7 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                                     ml: 0.2,
                                 }}
                             >
-                                add target
+                                add target slot
                             </Typography>
                         </Box>
                     ) : (
@@ -1848,7 +1904,7 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                             <Tab
                                 value={ADD_TARGET_TAB_VALUE}
                                 label={
-                                    <Tooltip title="Add target" arrow>
+                                    <Tooltip title="Add target slot (satellite, mission, or body)" arrow>
                                         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 20 }}>
                                             <Typography component="span" sx={{ fontSize: '2rem', lineHeight: 1, fontWeight: 700 }}>
                                                 +
