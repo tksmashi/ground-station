@@ -580,13 +580,60 @@ async def fetch_next_events_for_satellite(
             if result and result.get("success", False):
                 events_for_satellite = result.get("data", [])
 
-                for idx, event in enumerate(events_for_satellite):
-                    event["name"] = satellite["name"]
-                    event["id"] = f"{event['id']}_{satellite['norad_id']}_{event['event_start']}"
+                home_location = {"lat": homelat, "lon": homelon}
+                now_utc = datetime.now(timezone.utc)
 
-                    # Elevation curves are now calculated in the frontend for better performance
-                    # Set to empty array - frontend will calculate using satellite.js
-                    event["elevation_curve"] = []
+                for event in events_for_satellite:
+                    event["name"] = satellite["name"]
+                    stable_suffix = f"_{satellite['norad_id']}_{event['event_start']}"
+                    base_event_id = str(event.get("id") or "").strip()
+                    if not base_event_id:
+                        event["id"] = f"{satellite['norad_id']}_{event['event_start']}"
+                    elif base_event_id.endswith(stable_suffix):
+                        event["id"] = base_event_id
+                    else:
+                        # Keep IDs stable across cache hits: avoid repeatedly appending suffixes.
+                        event["id"] = f"{base_event_id}{stable_suffix}"
+
+                    # Build elevation curves server-side for the target page so the UI thread
+                    # does not run heavy per-pass propagation during route changes.
+                    existing_curve = event.get("elevation_curve")
+                    if isinstance(existing_curve, list) and len(existing_curve) > 0:
+                        events.append(event)
+                        continue
+
+                    event_start = str(event.get("event_start") or "").strip()
+                    event_end = str(event.get("event_end") or "").strip()
+                    if not event_start or not event_end:
+                        event["elevation_curve"] = []
+                        events.append(event)
+                        continue
+
+                    try:
+                        start_dt = datetime.fromisoformat(event_start.replace("Z", "+00:00"))
+                        end_dt = datetime.fromisoformat(event_end.replace("Z", "+00:00"))
+                        if start_dt.tzinfo is None:
+                            start_dt = start_dt.replace(tzinfo=timezone.utc)
+                        if end_dt.tzinfo is None:
+                            end_dt = end_dt.replace(tzinfo=timezone.utc)
+
+                        time_until_start_minutes = (start_dt - now_utc).total_seconds() / 60.0
+                        time_since_end_minutes = (now_utc - end_dt).total_seconds() / 60.0
+                        should_extend = (
+                            time_until_start_minutes <= 120.0 and time_since_end_minutes <= 30.0
+                        )
+                        extend_start_minutes = 30 if should_extend else 0
+                    except Exception:
+                        # If parsing fails, still attempt curve calculation without extra extension.
+                        extend_start_minutes = 0
+
+                    event["elevation_curve"] = _calculate_elevation_curve(
+                        satellite_data=satellite,
+                        home_location=home_location,
+                        event_start=event_start,
+                        event_end=event_end,
+                        extend_start_minutes=extend_start_minutes,
+                    )
 
                     events.append(event)
 

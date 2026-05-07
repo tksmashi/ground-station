@@ -80,6 +80,17 @@ const getPassStatusPriority = (status) => {
     }
 };
 
+const getPassCurveKey = (pass) => {
+    const explicitId = String(pass?.id || '').trim();
+    if (explicitId) {
+        return explicitId;
+    }
+    const noradId = String(pass?.norad_id ?? '').trim();
+    const start = String(pass?.event_start ?? '').trim();
+    const end = String(pass?.event_end ?? '').trim();
+    return `${noradId}|${start}|${end}`;
+};
+
 const getPassBackgroundColor = (color, theme, coefficient) => ({
     backgroundColor: darken(color, coefficient),
     ...theme.applyStyles('light', {
@@ -555,6 +566,9 @@ const NextPassesIsland = React.memo(function NextPassesIsland() {
     const maxHeight = 400;
     const hasLoadedFromStorageRef = useRef(false);
     const isLoadingRef = useRef(false);
+    const curveCalcInFlightRef = useRef(false);
+    const curveCalcTimeoutRef = useRef(null);
+    const attemptedCurvePassKeysRef = useRef(new Set());
     const [quickFilterPreset, setQuickFilterPreset] = useState('all');
     const [filterNowMs, setFilterNowMs] = useState(() => Date.now());
     const nonSatellitePayload = useMemo(
@@ -628,6 +642,15 @@ const NextPassesIsland = React.memo(function NextPassesIsland() {
         return () => clearInterval(intervalId);
     }, []);
 
+    useEffect(() => {
+        attemptedCurvePassKeysRef.current.clear();
+        curveCalcInFlightRef.current = false;
+        if (curveCalcTimeoutRef.current != null) {
+            clearTimeout(curveCalcTimeoutRef.current);
+            curveCalcTimeoutRef.current = null;
+        }
+    }, [satelliteId, isSatelliteTarget]);
+
     const handleRefreshPasses = () => {
         if (isSatelliteTarget && satelliteId) {
             dispatch(fetchNextPasses({
@@ -646,38 +669,124 @@ const NextPassesIsland = React.memo(function NextPassesIsland() {
         }
     };
 
-    // Calculate elevation curves when passes are received or satellite changes
+    // Keep client-side curve calculation as a guarded fallback.
+    // Backend now provides curves, but this protects against empty legacy payloads.
     useEffect(() => {
-        if (!isSatelliteTarget) return;
-        // Check if location is valid (not null)
-        const isLocationValid = location && location.lat != null && location.lon != null;
-
-        if (satellitePasses && satellitePasses.length > 0 && isLocationValid && satelliteData && satelliteData.details) {
-            // Check if elevation curves need to be calculated (if any pass has empty elevation_curve)
-            const needsCalculation = satellitePasses.some(pass => !pass.elevation_curve || pass.elevation_curve.length === 0);
-
-            if (needsCalculation) {
-                // Create satellite lookup from satelliteData
-                const satelliteLookup = {
-                    [satelliteData.details.norad_id]: {
-                        norad_id: satelliteData.details.norad_id,
-                        tle1: satelliteData.details.tle1,
-                        tle2: satelliteData.details.tle2
-                    }
-                };
-
-                // Calculate elevation curves in the background
-                setTimeout(() => {
-                    const passesWithCurves = calculateElevationCurvesForPasses(
-                        satellitePasses,
-                        { lat: location.lat, lon: location.lon },
-                        satelliteLookup
-                    );
-                    dispatch(updateSatellitePassesWithElevationCurves(passesWithCurves));
-                }, 0);
-            }
+        if (!isSatelliteTarget) {
+            return undefined;
         }
-    }, [satellitePasses, location, satelliteData, satelliteId, dispatch, isSatelliteTarget]);
+        if (curveCalcInFlightRef.current) {
+            return undefined;
+        }
+        const isLocationValid = location && location.lat != null && location.lon != null;
+        if (!isLocationValid) {
+            return undefined;
+        }
+        if (!satelliteData?.details?.norad_id || !satelliteData?.details?.tle1 || !satelliteData?.details?.tle2) {
+            return undefined;
+        }
+        if (!Array.isArray(satellitePasses) || satellitePasses.length === 0) {
+            return undefined;
+        }
+
+        const pendingPasses = satellitePasses.filter((pass) => {
+            const existingCurve = pass?.elevation_curve;
+            if (Array.isArray(existingCurve) && existingCurve.length > 0) {
+                return false;
+            }
+            const curveKey = getPassCurveKey(pass);
+            if (!curveKey) {
+                return false;
+            }
+            return !attemptedCurvePassKeysRef.current.has(curveKey);
+        });
+
+        if (pendingPasses.length === 0) {
+            return undefined;
+        }
+
+        const pendingPassKeys = pendingPasses.map((pass) => getPassCurveKey(pass)).filter(Boolean);
+        const satelliteLookup = {
+            [satelliteData.details.norad_id]: {
+                norad_id: satelliteData.details.norad_id,
+                tle1: satelliteData.details.tle1,
+                tle2: satelliteData.details.tle2,
+            },
+        };
+        let cancelled = false;
+
+        curveCalcTimeoutRef.current = setTimeout(() => {
+            curveCalcTimeoutRef.current = null;
+            if (cancelled || curveCalcInFlightRef.current) {
+                return;
+            }
+            curveCalcInFlightRef.current = true;
+            for (const curveKey of pendingPassKeys) {
+                attemptedCurvePassKeysRef.current.add(curveKey);
+            }
+
+            try {
+                const recalculatedPendingPasses = calculateElevationCurvesForPasses(
+                    pendingPasses,
+                    { lat: location.lat, lon: location.lon },
+                    satelliteLookup
+                );
+                const updatedCurvesByPassKey = new Map();
+                for (const pass of recalculatedPendingPasses) {
+                    const curveKey = getPassCurveKey(pass);
+                    const nextCurve = pass?.elevation_curve;
+                    if (!curveKey || !Array.isArray(nextCurve) || nextCurve.length === 0) {
+                        continue;
+                    }
+                    updatedCurvesByPassKey.set(curveKey, nextCurve);
+                }
+                if (updatedCurvesByPassKey.size === 0 || cancelled) {
+                    return;
+                }
+
+                let hasUpdates = false;
+                const mergedPasses = satellitePasses.map((pass) => {
+                    const curveKey = getPassCurveKey(pass);
+                    const nextCurve = updatedCurvesByPassKey.get(curveKey);
+                    if (!nextCurve) {
+                        return pass;
+                    }
+                    const existingCurve = Array.isArray(pass?.elevation_curve) ? pass.elevation_curve : [];
+                    if (existingCurve.length === nextCurve.length && existingCurve.length > 0) {
+                        return pass;
+                    }
+                    hasUpdates = true;
+                    return {
+                        ...pass,
+                        elevation_curve: nextCurve,
+                    };
+                });
+
+                if (hasUpdates && !cancelled) {
+                    dispatch(updateSatellitePassesWithElevationCurves(mergedPasses));
+                }
+            } finally {
+                curveCalcInFlightRef.current = false;
+            }
+        }, 0);
+
+        return () => {
+            cancelled = true;
+            if (curveCalcTimeoutRef.current != null) {
+                clearTimeout(curveCalcTimeoutRef.current);
+                curveCalcTimeoutRef.current = null;
+            }
+        };
+    }, [
+        dispatch,
+        isSatelliteTarget,
+        location?.lat,
+        location?.lon,
+        satelliteData?.details?.norad_id,
+        satelliteData?.details?.tle1,
+        satelliteData?.details?.tle2,
+        satellitePasses,
+    ]);
 
     useEffect(() => {
         const target = containerRef.current;
