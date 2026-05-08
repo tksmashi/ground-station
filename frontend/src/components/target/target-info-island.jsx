@@ -1375,7 +1375,7 @@ const TargetInfoIsland = () => {
                                             Distance from Sun
                                         </Typography>
                                         <Typography variant="h5" sx={{ fontWeight: 700, color: 'text.primary', fontFamily: 'monospace', lineHeight: 1 }}>
-                                            {Number.isFinite(nonSatelliteDistanceAu) ? `${nonSatelliteDistanceAu.toFixed(4)} AU` : '--'}
+                                            {Number.isFinite(nonSatelliteDistanceAu) ? `${nonSatelliteDistanceAu.toFixed(2)} AU` : '--'}
                                         </Typography>
                                         <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.62rem' }}>
                                             {Number.isFinite(nonSatelliteDistanceKm) ? `${(nonSatelliteDistanceKm / 1e6).toFixed(2)}M km` : ''}
