@@ -141,7 +141,6 @@ const celestialSlice = createSlice({
             name: true,
             targetType: true,
             peakElevationDeg: true,
-            currentElevationDeg: true,
             progress: true,
             duration: true,
             eventStart: true,

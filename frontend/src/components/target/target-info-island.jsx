@@ -207,17 +207,16 @@ const TargetInfoIsland = () => {
         || targetIdentifier
         || '-'
     ).trim();
-    // During retarget transitions tracker telemetry can arrive before celestial rows refresh.
-    // Use tracker az/el as a temporary fallback to avoid an empty UI state.
-    const trackAzimuth = Number(nonSatelliteTrack?.sky_position?.az_deg);
-    const trackElevation = Number(nonSatelliteTrack?.sky_position?.el_deg);
-    const fallbackAzimuth = hasCurrentNonSatelliteTelemetry ? Number(satelliteData?.position?.az) : NaN;
-    const fallbackElevation = hasCurrentNonSatelliteTelemetry ? Number(satelliteData?.position?.el) : NaN;
-    const nonSatelliteAzimuth = Number.isFinite(trackAzimuth) ? trackAzimuth : fallbackAzimuth;
-    const nonSatelliteElevation = Number.isFinite(trackElevation) ? trackElevation : fallbackElevation;
-    const nonSatelliteVisible = typeof nonSatelliteTrack?.visibility?.visible === 'boolean'
-        ? nonSatelliteTrack.visibility.visible
-        : (Number.isFinite(nonSatelliteElevation) ? nonSatelliteElevation > 0 : null);
+    // Mission/body realtime pointing should come directly from tracker telemetry.
+    const nonSatelliteAzimuth = hasCurrentNonSatelliteTelemetry
+        ? Number(satelliteData?.position?.az)
+        : NaN;
+    const nonSatelliteElevation = hasCurrentNonSatelliteTelemetry
+        ? Number(satelliteData?.position?.el)
+        : NaN;
+    const nonSatelliteVisible = Number.isFinite(nonSatelliteElevation)
+        ? nonSatelliteElevation > 0
+        : null;
     const nonSatelliteError = String(nonSatelliteTrack?.error || monitoredTarget?.lastError || '').trim();
     const nonSatelliteSource = String(
         nonSatelliteTrack?.source
@@ -241,12 +240,13 @@ const TargetInfoIsland = () => {
     const nonSatelliteLightTimeMinutes = Number.isFinite(nonSatelliteDistanceAu) ? nonSatelliteDistanceAu * LIGHT_TIME_MIN_PER_AU : NaN;
     const nonSatelliteProjection = nonSatelliteTrack?.orbit_sampling || {};
     const nonSatelliteLastRefresh = monitoredTarget?.lastRefreshAt || monitoredTarget?.last_refresh_at || null;
-    const nonSatelliteHasRealtime = Number.isFinite(nonSatelliteAzimuth) || Number.isFinite(nonSatelliteElevation);
+    const nonSatelliteHasRealtime = Number.isFinite(nonSatelliteAzimuth) && Number.isFinite(nonSatelliteElevation);
     const satelliteAltitudeMeters = Number(satelliteData?.position?.alt);
     const satelliteVelocityKmS = Number(satelliteData?.position?.vel);
     const satelliteAltitudeMi = Number.isFinite(satelliteAltitudeMeters) ? satelliteAltitudeMeters / 1609.34 : NaN;
     const satelliteVelocityMiS = Number.isFinite(satelliteVelocityKmS) ? satelliteVelocityKmS * KM_TO_MI : NaN;
     const satelliteElevation = Number(satelliteData?.position?.el);
+    const satelliteAzimuth = Number(satelliteData?.position?.az);
     const satelliteVisible = Number.isFinite(satelliteElevation) ? satelliteElevation > 0 : null;
     const satelliteVisibilityLabel = satelliteVisible === true
         ? 'Visible'
@@ -312,7 +312,7 @@ const TargetInfoIsland = () => {
         }
         return null;
     }, [celestialPassRows, isSatelliteTarget, nonSatelliteTargetKey]);
-    const formatAngle = (value) => (Number.isFinite(value) ? `${value.toFixed(1)}°` : '--');
+    const formatAngle = (value) => (Number.isFinite(value) ? `${value.toFixed(2)}°` : '--');
 
     const satellitePassInfo = React.useMemo(() => {
         if (!selectedNoradId || !Array.isArray(satellitePasses) || satellitePasses.length === 0) {
@@ -712,8 +712,8 @@ const TargetInfoIsland = () => {
                                     Elevation
                                 </Typography>
                                 <Typography variant="h4" sx={{ fontWeight: 700, color: 'primary.main', fontFamily: 'monospace', lineHeight: 1 }}>
-                                    {satelliteData && satelliteData['position'] && satelliteData['position']['el'] !== undefined
-                                        ? `${satelliteData['position']['el'].toFixed(1)}°`
+                                    {Number.isFinite(satelliteElevation)
+                                        ? `${satelliteElevation.toFixed(2)}°`
                                         : '--'}
                                 </Typography>
                             </Box>
@@ -731,7 +731,7 @@ const TargetInfoIsland = () => {
                                     Azimuth
                                 </Typography>
                                 <Typography variant="h4" sx={{ fontWeight: 700, color: 'secondary.main', fontFamily: 'monospace', lineHeight: 1 }}>
-                                    {satelliteData && satelliteData['position'] && satelliteData['position']['az'] ? `${satelliteData['position']['az'].toFixed(1)}°` : '--'}
+                                    {Number.isFinite(satelliteAzimuth) ? `${satelliteAzimuth.toFixed(2)}°` : '--'}
                                 </Typography>
                             </Box>
                         </Grid>

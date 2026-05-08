@@ -1871,7 +1871,7 @@ const TargetSelectorBar = React.memo(function TargetSelectorBar() {
                                                                 lineHeight: 1.05,
                                                             }}
                                                         >
-                                                            {`Az ${option.satAz != null ? option.satAz.toFixed(1) : '--'}° • El ${option.satEl != null ? option.satEl.toFixed(1) : '--'}°`}
+                                                            {`Az ${option.satAz != null ? option.satAz.toFixed(2) : '--'}° • El ${option.satEl != null ? option.satEl.toFixed(2) : '--'}°`}
                                                         </Typography>
                                                     </Box>
                                                     <Tooltip title={`Delete target ${option.targetNumber}`} arrow>

@@ -222,7 +222,6 @@ const PassesTableSettingsDialog = ({ open, onClose }) => {
         { name: 'name', label: 'Name', category: 'basic', alwaysVisible: true },
         { name: 'targetType', label: 'Type', category: 'basic' },
         { name: 'peakElevationDeg', label: 'Peak Elevation', category: 'metrics' },
-        { name: 'currentElevationDeg', label: 'Current Elevation', category: 'metrics' },
         { name: 'progress', label: 'Progress', category: 'basic' },
         { name: 'duration', label: 'Duration', category: 'basic' },
         { name: 'eventStart', label: 'Start', category: 'time' },
@@ -314,7 +313,6 @@ const PassesTableSettingsDialog = ({ open, onClose }) => {
 
 const CelestialPasses = ({
     passes = [],
-    tracks = [],
     loading = false,
     gridEditable = false,
     onTargetSelected = null,
@@ -341,24 +339,10 @@ const CelestialPasses = ({
         return () => clearInterval(interval);
     }, []);
 
-    const currentElevationByTargetKey = useMemo(() => {
-        const map = {};
-        (tracks || []).forEach((track) => {
-            const key = String(track?.target_key || '').trim();
-            if (!key) return;
-            const elevation = Number(track?.sky_position?.el_deg);
-            if (Number.isFinite(elevation)) {
-                map[key] = elevation;
-            }
-        });
-        return map;
-    }, [tracks]);
-
     const rows = useMemo(() => (passes || []).map((pass) => {
         const eventStartMs = new Date(pass.event_start).getTime();
         const eventEndMs = new Date(pass.event_end).getTime();
         const status = getPassStatus({ eventStartMs, eventEndMs }, nowMs);
-        const currentElevation = currentElevationByTargetKey[String(pass.target_key || '').trim()];
         return {
             id: pass.id || `${pass.target_key || 'target'}_${pass.event_start || ''}`,
             status,
@@ -370,7 +354,6 @@ const CelestialPasses = ({
                     ? (pass.body_id || '-')
                     : (pass.command || '-'),
             peakElevationDeg: Number(pass.peak_elevation_deg),
-            currentElevationDeg: currentElevation,
             eventStart: pass.event_start,
             eventEnd: pass.event_end,
             event_start: pass.event_start,
@@ -386,7 +369,7 @@ const CelestialPasses = ({
             stale: pass.stale ? 'Yes' : 'No',
             source: pass.source || '-',
         };
-    }), [passes, nowMs, currentElevationByTargetKey]);
+    }), [passes, nowMs]);
 
     const filteredRows = useMemo(() => {
         if (quickFilterPreset === 'live') {
@@ -472,15 +455,6 @@ const CelestialPasses = ({
                 if (value < 10.0) return 'passes-cell-warning';
                 if (value > 45.0) return 'passes-cell-success';
                 return '';
-            },
-        },
-        {
-            field: 'currentElevationDeg',
-            headerName: 'Current Elevation',
-            minWidth: 130,
-            valueFormatter: (value, row) => {
-                if (row?.status !== 'live') return '-';
-                return formatAngle(value);
             },
         },
         {
