@@ -517,21 +517,21 @@ const MapSettingsIsland = ({ initialShowPastOrbitPath, initialShowFutureOrbitPat
                         {t('map_settings.reset_defaults', { defaultValue: 'Reset Defaults' })}
                     </Button>
 
-                    <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end">
-                        {saveFeedbackLabel ? (
-                            <Chip
-                                size="small"
-                                color={saveState === 'error' ? 'error' : saveState === 'saved' ? 'success' : 'default'}
-                                label={saveFeedbackLabel}
-                            />
-                        ) : null}
-                        <Button variant="outlined" onClick={cancelChanges}>
-                            {t('map_settings.cancel', { defaultValue: 'Cancel' })}
-                        </Button>
-                        <Button
-                            variant="contained"
-                            onClick={applySettings}
-                            disabled={!isDirty || saveState === 'saving'}
+                        <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end">
+                            {saveFeedbackLabel ? (
+                                <Chip
+                                    size="small"
+                                    color={saveState === 'error' ? 'error' : saveState === 'saved' ? 'success' : 'default'}
+                                    label={saveFeedbackLabel}
+                                />
+                            ) : null}
+                            <Button variant="outlined" onClick={cancelChanges}>
+                                {t('close', { defaultValue: 'Close' })}
+                            </Button>
+                            <Button
+                                variant="contained"
+                                onClick={applySettings}
+                                disabled={!isDirty || saveState === 'saving'}
                         >
                             {t('map_settings.apply', { defaultValue: 'Apply' })}
                         </Button>

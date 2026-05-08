@@ -1,15 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
     Box,
-    Button,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogTitle,
-    FormControlLabel,
     IconButton,
-    Stack,
-    Switch,
     Tooltip,
     Typography,
 } from '@mui/material';
@@ -41,12 +33,8 @@ import MonitoredCelestialGridIsland from './monitored-grid-island.jsx';
 import CelestialPasses from './celestial-passes.jsx';
 import CelestialPassTimeline from './celestial-pass-timeline.jsx';
 import CelestialInfoIsland from './celestial-info-island.jsx';
+import SolarSystemLayoutOptionsDialog from './solar-system-layout-options-dialog.jsx';
 import SettingsIcon from '@mui/icons-material/Settings';
-import {
-    DEFAULT_SOLAR_SYSTEM_DISPLAY_OPTIONS,
-    resetSolarSystemDisplayOptions,
-    setSolarSystemDisplayOption,
-} from './celestial-display-slice.jsx';
 
 export const gridLayoutStoreName = 'celestial-layouts';
 const LAYOUT_SCHEMA_VERSION = 4;
@@ -74,38 +62,6 @@ const buildTargetKey = (row) => {
     const command = String(row?.command || '').trim();
     return command ? `mission:${command}` : '';
 };
-const DIALOG_PAPER_SX = {
-    bgcolor: 'background.paper',
-    border: (theme) => `1px solid ${theme.palette.divider}`,
-    borderRadius: 2,
-};
-const DIALOG_TITLE_SX = {
-    bgcolor: (theme) => theme.palette.mode === 'dark' ? 'grey.900' : 'grey.100',
-    borderBottom: (theme) => `1px solid ${theme.palette.divider}`,
-    fontSize: '1.25rem',
-    fontWeight: 'bold',
-    py: 2.5,
-};
-const DIALOG_CONTENT_SX = {
-    bgcolor: 'background.paper',
-    px: 3,
-    py: 3,
-};
-const DIALOG_ACTIONS_SX = {
-    bgcolor: (theme) => theme.palette.mode === 'dark' ? 'grey.900' : 'grey.100',
-    borderTop: (theme) => `1px solid ${theme.palette.divider}`,
-    px: 3,
-    py: 2.5,
-    gap: 2,
-};
-const DIALOG_CANCEL_BUTTON_SX = {
-    borderColor: (theme) => theme.palette.mode === 'dark' ? 'grey.700' : 'grey.400',
-    '&:hover': {
-        borderColor: (theme) => theme.palette.mode === 'dark' ? 'grey.600' : 'grey.500',
-        bgcolor: (theme) => theme.palette.mode === 'dark' ? 'grey.800' : 'grey.200',
-    },
-};
-
 function loadLayoutsFromLocalStorage() {
     try {
         const raw = localStorage.getItem(gridLayoutStoreName);
@@ -568,71 +524,11 @@ const CelestialMainLayout = () => {
 
     return (
         <Box sx={{ width: '100%', height: '100%' }}>
-            <Dialog
+            <SolarSystemLayoutOptionsDialog
                 open={openSolarSystemLayoutOptionsDialog}
+                initialOptions={solarSystemDisplayOptions}
                 onClose={() => setOpenSolarSystemLayoutOptionsDialog(false)}
-                maxWidth="sm"
-                fullWidth
-                PaperProps={{ sx: DIALOG_PAPER_SX }}
-            >
-                <DialogTitle sx={DIALOG_TITLE_SX}>Solar System Layout Options</DialogTitle>
-                <DialogContent sx={DIALOG_CONTENT_SX}>
-                    <Stack spacing={0.25} sx={{ pt: 0.5 }}>
-                        {[
-                            ['showGrid', 'Show grid'],
-                            ['showPlanets', 'Show planets'],
-                            ['showPlanetLabels', 'Show planet labels'],
-                            ['showPlanetOrbits', 'Show planet orbits'],
-                            ['showTrackedObjects', 'Show tracked objects'],
-                            ['showTrackedOrbits', 'Show tracked orbits'],
-                            ['showTrackedLabels', 'Show tracked labels'],
-                            ['showAsteroidZones', 'Show asteroid zones'],
-                            ['showZoneLabels', 'Show asteroid zone labels'],
-                            ['showResonanceMarkers', 'Show resonance markers'],
-                            ['showTimestamp', 'Show epoch label'],
-                            ['showScaleIndicator', 'Show scale label'],
-                            ['showGestureHint', 'Show gesture hint'],
-                        ].map(([key, label]) => (
-                            <FormControlLabel
-                                key={key}
-                                control={(
-                                    <Switch
-                                        checked={Boolean(
-                                            solarSystemDisplayOptions?.[key]
-                                            ?? DEFAULT_SOLAR_SYSTEM_DISPLAY_OPTIONS[key]
-                                        )}
-                                        onChange={(event) => {
-                                            dispatch(
-                                                setSolarSystemDisplayOption({
-                                                    key,
-                                                    value: event.target.checked,
-                                                }),
-                                            );
-                                        }}
-                                    />
-                                )}
-                                label={label}
-                            />
-                        ))}
-                    </Stack>
-                </DialogContent>
-                <DialogActions sx={DIALOG_ACTIONS_SX}>
-                    <Button
-                        onClick={() => dispatch(resetSolarSystemDisplayOptions())}
-                        variant="outlined"
-                        sx={DIALOG_CANCEL_BUTTON_SX}
-                    >
-                        Reset
-                    </Button>
-                    <Button
-                        onClick={() => setOpenSolarSystemLayoutOptionsDialog(false)}
-                        color="success"
-                        variant="contained"
-                    >
-                        Close
-                    </Button>
-                </DialogActions>
-            </Dialog>
+            />
             <CelestialTopBar
                 projectionPastHours={projectionSettings.past_hours}
                 projectionFutureHours={projectionSettings.future_hours}
