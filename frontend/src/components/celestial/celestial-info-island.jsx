@@ -192,6 +192,8 @@ const CelestialInfoIsland = ({
         normalizedTargetKey
         && (targetType === 'body' ? bodyTargetId : missionCommand)
     );
+    // Keep target actions disabled while the selected card data is still being resolved.
+    const isCardLoading = Boolean(normalizedTargetKey) && loading && !selectedTrack;
     const currentlyTrackedTargetKey = buildTrackingTargetKey(trackingState || {});
     const isCurrentlyTargeted = Boolean(normalizedTargetKey) && currentlyTrackedTargetKey === normalizedTargetKey;
 
@@ -512,7 +514,7 @@ const CelestialInfoIsland = ({
                         fullWidth
                         variant="contained"
                         color="primary"
-                        disabled={!socket || !isTargetable || isCurrentlyTargeted}
+                        disabled={!socket || !isTargetable || isCurrentlyTargeted || isCardLoading}
                         onClick={handleSetTrackingOnBackend}
                         sx={{
                             py: 1.25,
