@@ -23,6 +23,7 @@ import setproctitle
 from scipy import signal as sp_signal
 
 from demodulators.basedecoderprocess import BaseDecoderProcess
+from demodulators.gnssmonitorudp import GnssUdpMonitorReceiver
 from telemetry.parser import TelemetryParser
 
 logger = logging.getLogger("gnsssdrdecoder")
@@ -86,6 +87,16 @@ class GNSSSdrDecoder(BaseDecoderProcess):
         self._last_output_event_ts = 0.0
         self._last_output_event_line = ""
         self._last_fifo_drop_log_ts = 0.0
+        self.monitor_receiver: Optional[GnssUdpMonitorReceiver] = None
+        self.monitor_client_addresses = os.environ.get(
+            "GNSS_SDR_MONITOR_CLIENT_ADDRESSES", "127.0.0.1"
+        )
+        self.monitor_bind_host = os.environ.get("GNSS_SDR_MONITOR_BIND_HOST", "0.0.0.0")
+        self.monitor_ports: Dict[str, int] = {}
+        self._last_udp_event_emit_ts: Dict[Tuple[str, str, int, int], float] = {}
+        self._udp_tracking_min_emit_interval_s = float(
+            os.environ.get("GNSS_SDR_MONITOR_EVENT_INTERVAL_S", "1.0")
+        )
         # Keep write timeout short so the decoder loop remains responsive,
         # while still allowing retried writes for FIFO backpressure spikes.
         self.fifo_write_timeout_s = 0.2
@@ -266,6 +277,10 @@ class GNSSSdrDecoder(BaseDecoderProcess):
             "fifo_partial_write_events": perf_stats.get("fifo_partial_write_events", 0),
             "fifo_write_errors": perf_stats.get("fifo_write_errors", 0),
             "queue_timeouts": perf_stats.get("queue_timeouts", 0),
+            "udp_packets_total": perf_stats.get("udp_packets_total", 0),
+            "udp_parse_errors": perf_stats.get("udp_parse_errors", 0),
+            "udp_events_emitted": perf_stats.get("udp_events_emitted", 0),
+            "udp_events_suppressed": perf_stats.get("udp_events_suppressed", 0),
             "last_gnss_log": self.last_gnss_log_line,
         }
 
@@ -521,9 +536,6 @@ class GNSSSdrDecoder(BaseDecoderProcess):
                 "PVT.positioning_mode=Single",
                 "PVT.iono_model=Broadcast",
                 "PVT.trop_model=Saastamoinen",
-                # Enable RTKLIB maximum trace verbosity while diagnosing
-                # missing first-fix / repeated solver-reset loops.
-                "PVT.rtk_trace_level=5",
                 f"PVT.output_rate_ms={self.gnss_output_rate_ms}",
                 f"PVT.display_rate_ms={self.gnss_output_rate_ms}",
                 "PVT.output_enabled=true",
@@ -537,6 +549,27 @@ class GNSSSdrDecoder(BaseDecoderProcess):
                 "PVT.geojson_output_enabled=false",
                 "PVT.kml_output_enabled=false",
                 "PVT.dump=false",
+                "",
+                # Use GNSS-SDR UDP monitor streams as the default event transport.
+                "Monitor.enable_monitor=true",
+                f"Monitor.client_addresses={self.monitor_client_addresses}",
+                f"Monitor.udp_port={self.monitor_ports.get('monitor', 0)}",
+                "Monitor.enable_protobuf=true",
+                "",
+                "AcquisitionMonitor.enable_monitor=true",
+                f"AcquisitionMonitor.client_addresses={self.monitor_client_addresses}",
+                f"AcquisitionMonitor.udp_port={self.monitor_ports.get('acquisition', 0)}",
+                "AcquisitionMonitor.enable_protobuf=true",
+                "",
+                "TrackingMonitor.enable_monitor=true",
+                f"TrackingMonitor.client_addresses={self.monitor_client_addresses}",
+                f"TrackingMonitor.udp_port={self.monitor_ports.get('tracking', 0)}",
+                "TrackingMonitor.enable_protobuf=true",
+                "",
+                "PVT.enable_monitor=true",
+                f"PVT.monitor_client_addresses={self.monitor_client_addresses}",
+                f"PVT.monitor_udp_port={self.monitor_ports.get('pvt', 0)}",
+                "PVT.enable_protobuf=true",
             ]
         )
         return "\n".join(lines) + "\n"
@@ -546,6 +579,11 @@ class GNSSSdrDecoder(BaseDecoderProcess):
         self.fifo_path = os.path.join(self.runtime_dir, "iq_input.fifo")
         self.config_path = os.path.join(self.runtime_dir, "gnss-sdr.conf")
         self.nmea_path = os.path.join(self.runtime_dir, "gnss_sdr_pvt.nmea")
+        self._last_udp_event_emit_ts = {}
+        if self.monitor_receiver is not None:
+            self.monitor_receiver.close()
+        self.monitor_receiver = GnssUdpMonitorReceiver(bind_host=self.monitor_bind_host)
+        self.monitor_ports = dict(self.monitor_receiver.ports)
 
         os.mkfifo(self.fifo_path)
         with open(self.config_path, "w", encoding="utf-8") as f:
@@ -560,7 +598,9 @@ class GNSSSdrDecoder(BaseDecoderProcess):
             line = raw_line.strip()
             if not line:
                 continue
-            self._handle_gnss_log_line(line)
+            # Keep the latest GNSS-SDR line for status/debug visibility.
+            # Decoder outputs now come from UDP monitor streams.
+            self.last_gnss_log_line = line[:300]
 
     def _discover_gnss_log_file(self) -> Optional[str]:
         if self.gnss_info_log_path:
@@ -826,7 +866,172 @@ class GNSSSdrDecoder(BaseDecoderProcess):
                     }
                 )
 
+    @staticmethod
+    def _normalize_satellite_system(value: Any) -> str:
+        raw = str(value or "").strip().upper()
+        if not raw:
+            return ""
+        mapping = {
+            "GPS": "G",
+            "G": "G",
+            "GALILEO": "E",
+            "E": "E",
+            "GLONASS": "R",
+            "R": "R",
+            "BEIDOU": "C",
+            "BDS": "C",
+            "B": "C",
+            "C": "C",
+            "QZSS": "J",
+            "QZS": "J",
+            "J": "J",
+        }
+        return mapping.get(raw, raw[:1])
+
+    def _should_emit_udp_event(
+        self, event_type: str, system: str, prn: int, channel: Optional[int]
+    ) -> bool:
+        channel_id = int(channel) if channel is not None else -1
+        key = (event_type, system, int(prn), channel_id)
+        now = time.time()
+        last = self._last_udp_event_emit_ts.get(key, 0.0)
+        if (now - last) < self._udp_tracking_min_emit_interval_s:
+            with self.stats_lock:
+                self.stats["udp_events_suppressed"] += 1
+            return False
+        self._last_udp_event_emit_ts[key] = now
+        return True
+
+    def _emit_udp_satellite_event(self, event_type: str, observation: Dict[str, Any]) -> None:
+        system = self._normalize_satellite_system(observation.get("system"))
+        prn_raw = observation.get("prn")
+        if prn_raw is None:
+            return
+        try:
+            prn = int(str(prn_raw))
+        except (TypeError, ValueError):
+            return
+        if not system or prn <= 0:
+            return
+
+        channel_raw = observation.get("channel_id")
+        channel: Optional[int]
+        try:
+            channel = int(channel_raw) if channel_raw is not None else None
+        except (TypeError, ValueError):
+            channel = None
+
+        if not self._should_emit_udp_event(event_type, system, prn, channel):
+            return
+
+        cn0 = observation.get("cn0_db_hz")
+        doppler = observation.get("carrier_doppler_hz")
+        payload: Dict[str, Any] = {
+            "event": event_type,
+            "satellite_system": system,
+            "satellite_prn": prn,
+            "channel": channel,
+            "message": f"{event_type.upper()} {system}{prn:02d}",
+        }
+        if cn0 is not None:
+            payload["cn0_db_hz"] = cn0
+        if doppler is not None:
+            payload["carrier_doppler_hz"] = doppler
+
+        self._send_output_update(payload)
+        with self.stats_lock:
+            self.stats["udp_events_emitted"] += 1
+
+    def _emit_udp_pvt_event(self, pvt: Dict[str, Any]) -> None:
+        latitude = pvt.get("latitude")
+        longitude = pvt.get("longitude")
+        altitude = pvt.get("height")
+        valid_sats = pvt.get("valid_sats")
+        solution_status = pvt.get("solution_status")
+
+        has_coords = latitude is not None and longitude is not None
+        has_solution = solution_status is not None
+        if not has_coords and not has_solution:
+            return
+
+        if not self._should_emit_udp_event("nmea_gga", "P", 0, 0):
+            return
+
+        payload: Dict[str, Any] = {
+            "event": "nmea_gga",
+            "message": "PVT update",
+            "latitude": latitude,
+            "longitude": longitude,
+            "altitude_m": altitude,
+            "satellites": valid_sats,
+            "fix_quality": str(solution_status) if solution_status is not None else "0",
+        }
+        utc_time = pvt.get("utc_time")
+        if utc_time:
+            payload["utc_time"] = utc_time
+
+        self._send_output_update(payload)
+        self._send_status_update(
+            DecoderStatus.TRACKING,
+            {
+                "latitude": latitude,
+                "longitude": longitude,
+                "altitude_m": altitude,
+                "satellites": valid_sats,
+                "fix_quality": payload["fix_quality"],
+                "utc_time": utc_time,
+            },
+        )
+        with self.stats_lock:
+            self.stats["udp_events_emitted"] += 1
+
+    def _poll_monitor_updates(self) -> None:
+        if not self.monitor_receiver:
+            return
+
+        polled = self.monitor_receiver.poll()
+        snapshot = self.monitor_receiver.snapshot_stats()
+        with self.stats_lock:
+            self.stats["udp_packets_total"] = snapshot.get("packets_total", 0)
+            self.stats["udp_packets_monitor"] = snapshot.get("packets_monitor", 0)
+            self.stats["udp_packets_acquisition"] = snapshot.get("packets_acquisition", 0)
+            self.stats["udp_packets_tracking"] = snapshot.get("packets_tracking", 0)
+            self.stats["udp_packets_pvt"] = snapshot.get("packets_pvt", 0)
+            self.stats["udp_parse_errors"] = snapshot.get("parse_errors", 0)
+
+        saw_acquisition = False
+        saw_tracking = False
+
+        for obs in polled.get("acquisition", []):
+            self._emit_udp_satellite_event("acquisition", obs)
+            saw_acquisition = True
+
+        for obs in polled.get("tracking", []):
+            self._emit_udp_satellite_event("tracking", obs)
+            saw_tracking = True
+
+        for pvt in polled.get("pvt", []):
+            self._emit_udp_pvt_event(pvt)
+            saw_tracking = True
+
+        # Backward-compatible state updates for the decoder lifecycle panel.
+        now = time.time()
+        if saw_tracking and (now - self._last_log_status_emit_ts) >= 0.25:
+            self._last_log_status_emit_ts = now
+            self._send_status_update(DecoderStatus.TRACKING, {"source": "udp_monitor"})
+        elif saw_acquisition and (now - self._last_log_status_emit_ts) >= 0.25:
+            self._last_log_status_emit_ts = now
+            self._send_status_update(DecoderStatus.ACQUIRING, {"source": "udp_monitor"})
+
     def _cleanup_runtime(self):
+        if self.monitor_receiver is not None:
+            try:
+                self.monitor_receiver.close()
+            except Exception:
+                pass
+            self.monitor_receiver = None
+            self.monitor_ports = {}
+
         if self.fifo_fd is not None:
             try:
                 os.close(self.fifo_fd)
@@ -908,6 +1113,14 @@ class GNSSSdrDecoder(BaseDecoderProcess):
             "fifo_write_errors": 0,
             "samples_dropped_out_of_band": 0,
             "queue_timeouts": 0,
+            "udp_packets_total": 0,
+            "udp_packets_monitor": 0,
+            "udp_packets_acquisition": 0,
+            "udp_packets_tracking": 0,
+            "udp_packets_pvt": 0,
+            "udp_parse_errors": 0,
+            "udp_events_emitted": 0,
+            "udp_events_suppressed": 0,
             "data_messages_out": 0,
             "last_activity": None,
             "errors": 0,
@@ -919,8 +1132,7 @@ class GNSSSdrDecoder(BaseDecoderProcess):
         process = psutil.Process()
         last_cpu_check = time.time()
         last_stats_time = time.time()
-        last_nmea_poll = time.time()
-        last_log_poll = time.time()
+        last_monitor_poll = time.time()
 
         try:
             if shutil.which("gnss-sdr") is None:
@@ -977,6 +1189,7 @@ class GNSSSdrDecoder(BaseDecoderProcess):
                 {
                     "gnss_config_file": self.config_path,
                     "gnss_runtime_dir": self.runtime_dir,
+                    "monitor_udp_ports": dict(self.monitor_ports),
                 },
             )
 
@@ -999,13 +1212,9 @@ class GNSSSdrDecoder(BaseDecoderProcess):
                     self._send_stats_update()
                     last_stats_time = now
 
-                if now - last_nmea_poll >= 0.5:
-                    self._poll_nmea_updates()
-                    last_nmea_poll = now
-
-                if now - last_log_poll >= 0.5:
-                    self._poll_gnss_log_updates()
-                    last_log_poll = now
+                if now - last_monitor_poll >= 0.2:
+                    self._poll_monitor_updates()
+                    last_monitor_poll = now
 
                 if self.gnss_process and self.gnss_process.poll() is not None:
                     self._send_status_update(
@@ -1058,10 +1267,7 @@ class GNSSSdrDecoder(BaseDecoderProcess):
                     self.sdr_sample_rate = sdr_rate
                     self.sdr_center_freq = sdr_center
 
-                # Temporary diagnostic mode:
-                # feed raw centered SDR IQ directly to GNSS-SDR (no per-chunk
-                # frequency translation) while testing with SDR center at L1.
-                centered = samples
+                centered = self._frequency_translate(samples, vfo_center - sdr_center, sdr_rate)
                 decimated = self._decimate_iq(centered)
 
                 i = np.clip(np.real(decimated) * 32767.0, -32768, 32767).astype(np.int16)
