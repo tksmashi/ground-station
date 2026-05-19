@@ -326,6 +326,8 @@ def soapysdr_local_worker_process(
         }
         last_stats_send = time.time()
         stats_send_interval = 1.0
+        stream_chunk_id = 0
+        stream_sample_index = 0
 
         # CPU and memory monitoring
         process = psutil.Process()
@@ -608,6 +610,11 @@ def soapysdr_local_worker_process(
 
                 # Remove DC offset spike
                 samples = remove_dc_offset(samples)
+                chunk_sample_count = len(samples)
+                chunk_id = stream_chunk_id
+                chunk_start_sample = stream_sample_index
+                stream_chunk_id += 1
+                stream_sample_index += chunk_sample_count
 
                 # Stream IQ data to consumers (FFT processor, demodulators, etc.)
                 # Broadcast to both queues so FFT and demodulation can work independently
@@ -631,6 +638,9 @@ def soapysdr_local_worker_process(
                                         "offset_freq_hz": offset_freq,
                                         "sample_rate": actual_sample_rate,
                                         "timestamp": timestamp,
+                                        "stream_chunk_id": chunk_id,
+                                        "stream_start_sample": chunk_start_sample,
+                                        "stream_sample_count": chunk_sample_count,
                                         "config": {
                                             "fft_size": fft_size,
                                             "fft_window": fft_window,
@@ -660,6 +670,9 @@ def soapysdr_local_worker_process(
                                         "offset_freq_hz": offset_freq,
                                         "sample_rate": actual_sample_rate,
                                         "timestamp": timestamp,
+                                        "stream_chunk_id": chunk_id,
+                                        "stream_start_sample": chunk_start_sample,
+                                        "stream_sample_count": chunk_sample_count,
                                     }
                                     iq_queue_demod.put_nowait(demod_message)
                                     stats["iq_chunks_out"] += 1

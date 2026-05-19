@@ -113,7 +113,9 @@ class IQBroadcaster(threading.Thread):
                     "delivered": 0,
                     "dropped": 0,
                 }
-                self.logger.info(f"Subscribed session {session_id} (queue: {queue_type})")
+                self.logger.info(
+                    f"Subscribed session {session_id} (queue: {queue_type}, maxsize={maxsize})"
+                )
             result: Union[queue.Queue[Any], multiprocessing.Queue[Any]] = self.subscribers[
                 session_id
             ]["queue"]
@@ -128,8 +130,16 @@ class IQBroadcaster(threading.Thread):
         """
         with self.lock:
             if session_id in self.subscribers:
+                subscriber_info = self.subscribers[session_id]
+                queue_size = self._safe_queue_size(subscriber_info["queue"])
+                self.logger.info(
+                    f"Unsubscribed session {session_id}: "
+                    f"delivered={subscriber_info.get('delivered', 0)} "
+                    f"dropped={subscriber_info.get('dropped', 0)} "
+                    f"maxsize={subscriber_info.get('maxsize')} "
+                    f"qsize={queue_size if queue_size is not None else 'unknown'}"
+                )
                 del self.subscribers[session_id]
-                self.logger.info(f"Unsubscribed session {session_id}")
 
     def get_subscriber_count(self) -> int:
         """
@@ -201,6 +211,15 @@ class IQBroadcaster(threading.Thread):
 
         # Non-internal session IDs do not contain ':' in practice.
         return parts[1]
+
+    def _safe_queue_size(self, q) -> Optional[int]:
+        """Best-effort queue size retrieval for diagnostics."""
+        if not hasattr(q, "qsize"):
+            return None
+        try:
+            return int(q.qsize())
+        except Exception:
+            return None
 
     def _enrich_iq_message_with_vfo_states(
         self, iq_message: Dict[str, Any], session_id: str

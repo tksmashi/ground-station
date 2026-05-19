@@ -93,8 +93,26 @@ class IQRecorder(threading.Thread):
             "queue_timeouts": 0,
             "last_activity": None,
             "errors": 0,
+            # Stream continuity debug counters (bug-hunt instrumentation)
+            "messages_with_chunk_meta": 0,
+            "messages_missing_chunk_meta": 0,
+            "invalid_chunk_meta": 0,
+            "chunk_gap_events": 0,
+            "missing_chunks": 0,
+            "chunk_reorders": 0,
+            "duplicate_chunk_ids": 0,
+            "sample_gap_events": 0,
+            "missing_samples": 0,
+            "sample_backtracks": 0,
+            "sample_count_mismatch": 0,
+            "first_chunk_id": None,
+            "last_chunk_id": None,
+            "first_start_sample": None,
+            "last_start_sample": None,
         }
         self.stats_lock = threading.Lock()
+        self.last_stream_chunk_id = None
+        self.last_stream_end_sample = None
 
         # Open data file for writing
         self.data_file = open(f"{recording_path}.sigmf-data", "wb")
@@ -125,6 +143,9 @@ class IQRecorder(threading.Thread):
                 )
                 sample_rate = iq_message.get("sample_rate")
                 timestamp = iq_message.get("timestamp")
+                stream_chunk_id = iq_message.get("stream_chunk_id")
+                stream_start_sample = iq_message.get("stream_start_sample")
+                stream_sample_count = iq_message.get("stream_sample_count")
 
                 if samples is None:
                     continue
@@ -135,6 +156,58 @@ class IQRecorder(threading.Thread):
                 # Update sample count
                 with self.stats_lock:
                     self.stats["iq_samples_in"] += len(samples)
+
+                # Continuity instrumentation: detect dropped/reordered chunks and sample gaps.
+                if stream_chunk_id is None or stream_start_sample is None:
+                    with self.stats_lock:
+                        self.stats["messages_missing_chunk_meta"] += 1
+                else:
+                    try:
+                        chunk_id = int(stream_chunk_id)
+                        start_sample = int(stream_start_sample)
+                        advertised_count = (
+                            int(stream_sample_count) if stream_sample_count is not None else None
+                        )
+                    except (TypeError, ValueError):
+                        with self.stats_lock:
+                            self.stats["invalid_chunk_meta"] += 1
+                    else:
+                        with self.stats_lock:
+                            self.stats["messages_with_chunk_meta"] += 1
+
+                            if self.stats["first_chunk_id"] is None:
+                                self.stats["first_chunk_id"] = chunk_id
+                            self.stats["last_chunk_id"] = chunk_id
+
+                            if self.stats["first_start_sample"] is None:
+                                self.stats["first_start_sample"] = start_sample
+                            self.stats["last_start_sample"] = start_sample
+
+                            if self.last_stream_chunk_id is not None:
+                                if chunk_id == self.last_stream_chunk_id:
+                                    self.stats["duplicate_chunk_ids"] += 1
+                                elif chunk_id > self.last_stream_chunk_id + 1:
+                                    self.stats["chunk_gap_events"] += 1
+                                    self.stats["missing_chunks"] += (
+                                        chunk_id - self.last_stream_chunk_id - 1
+                                    )
+                                elif chunk_id < self.last_stream_chunk_id:
+                                    self.stats["chunk_reorders"] += 1
+
+                            if self.last_stream_end_sample is not None:
+                                if start_sample > self.last_stream_end_sample:
+                                    self.stats["sample_gap_events"] += 1
+                                    self.stats["missing_samples"] += (
+                                        start_sample - self.last_stream_end_sample
+                                    )
+                                elif start_sample < self.last_stream_end_sample:
+                                    self.stats["sample_backtracks"] += 1
+
+                            if advertised_count is not None and advertised_count != len(samples):
+                                self.stats["sample_count_mismatch"] += 1
+
+                        self.last_stream_chunk_id = chunk_id
+                        self.last_stream_end_sample = start_sample + len(samples)
 
                 # Check if parameters changed (new capture segment needed)
                 if (
@@ -282,6 +355,9 @@ class IQRecorder(threading.Thread):
         self.data_file.close()
 
         # Write final SigMF metadata (replaces preliminary metadata, preserves start_time)
+        with self.stats_lock:
+            recorder_stats = self.stats.copy()
+
         global_metadata: dict = {
             "core:datatype": "cf32_le",
             "core:sample_rate": self.current_sample_rate,
@@ -294,6 +370,7 @@ class IQRecorder(threading.Thread):
             .isoformat()
             + "Z",
             "gs:session_id": self.session_id,
+            "gs:recorder_stats": recorder_stats,
         }
 
         # Add target satellite NORAD ID if provided
