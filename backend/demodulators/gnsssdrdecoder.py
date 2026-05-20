@@ -109,6 +109,7 @@ class GNSSSdrDecoder(BaseDecoderProcess):
         self._last_activity_heartbeat_ts = 0.0
         self._last_activity_packets_total = 0
         self._last_activity_monitor_obs_total = 0
+        self._last_activity_loss_of_lock_total = 0
         self._last_status = DecoderStatus.IDLE
         self.gnss_input_transport = "zmq"
         self.zmq_startup_delay_s = float(os.environ.get("GNSS_ZMQ_STARTUP_DELAY_S", "0.2"))
@@ -301,6 +302,7 @@ class GNSSSdrDecoder(BaseDecoderProcess):
             "udp_events_emitted": perf_stats.get("udp_events_emitted", 0),
             "udp_events_suppressed": perf_stats.get("udp_events_suppressed", 0),
             "activity_heartbeats_emitted": perf_stats.get("activity_heartbeats_emitted", 0),
+            "loss_of_lock_total": perf_stats.get("loss_of_lock_total", 0),
             "gnss_input_transport": self.gnss_input_transport,
             "gnss_zmq_endpoint": self.zmq_endpoint,
             "last_gnss_log": self.last_gnss_log_line,
@@ -610,6 +612,7 @@ class GNSSSdrDecoder(BaseDecoderProcess):
         self._last_activity_heartbeat_ts = 0.0
         self._last_activity_packets_total = 0
         self._last_activity_monitor_obs_total = 0
+        self._last_activity_loss_of_lock_total = 0
         if self.monitor_receiver is not None:
             self.monitor_receiver.close()
         self.monitor_receiver = GnssUdpMonitorReceiver(bind_host=self.monitor_bind_host)
@@ -787,6 +790,9 @@ class GNSSSdrDecoder(BaseDecoderProcess):
             "message": self.last_gnss_log_line,
         }
         event.update(self._parse_satellite_from_log_line(message))
+        if event_type == "lost":
+            with self.stats_lock:
+                self.stats["loss_of_lock_total"] = int(self.stats.get("loss_of_lock_total", 0)) + 1
         self._send_output_update(event)
 
     def _poll_gnss_log_updates(self) -> None:
@@ -1093,6 +1099,7 @@ class GNSSSdrDecoder(BaseDecoderProcess):
             monitor_obs_total = int(self.stats.get("udp_monitor_observations", 0))
             input_write_drops = int(self.stats.get("input_write_drops", 0))
             queue_timeouts = int(self.stats.get("queue_timeouts", 0))
+            loss_of_lock_total = int(self.stats.get("loss_of_lock_total", 0))
 
         elapsed = current_time - self._last_activity_heartbeat_ts
         if elapsed <= 0:
@@ -1100,6 +1107,7 @@ class GNSSSdrDecoder(BaseDecoderProcess):
 
         packets_delta = max(0, packets_total - self._last_activity_packets_total)
         monitor_obs_delta = max(0, monitor_obs_total - self._last_activity_monitor_obs_total)
+        loss_of_lock_delta = max(0, loss_of_lock_total - self._last_activity_loss_of_lock_total)
         packets_per_sec = packets_delta / elapsed
         monitor_obs_per_sec = monitor_obs_delta / elapsed
         has_activity = packets_delta > 0 or monitor_obs_delta > 0
@@ -1121,6 +1129,8 @@ class GNSSSdrDecoder(BaseDecoderProcess):
                 "monitor_observations_total": monitor_obs_total,
                 "monitor_observations_delta": monitor_obs_delta,
                 "monitor_observations_per_sec": monitor_obs_per_sec,
+                "loss_of_lock_total": loss_of_lock_total,
+                "loss_of_lock_delta": loss_of_lock_delta,
                 "input_write_drops": input_write_drops,
                 "queue_timeouts": queue_timeouts,
             }
@@ -1132,6 +1142,8 @@ class GNSSSdrDecoder(BaseDecoderProcess):
                 "gnss_has_pvt": has_pvt,
                 "gnss_udp_packets_per_sec": packets_per_sec,
                 "gnss_monitor_obs_per_sec": monitor_obs_per_sec,
+                "gnss_loss_of_lock_total": loss_of_lock_total,
+                "gnss_loss_of_lock_delta": loss_of_lock_delta,
             },
         )
         with self.stats_lock:
@@ -1140,6 +1152,7 @@ class GNSSSdrDecoder(BaseDecoderProcess):
         self._last_activity_heartbeat_ts = current_time
         self._last_activity_packets_total = packets_total
         self._last_activity_monitor_obs_total = monitor_obs_total
+        self._last_activity_loss_of_lock_total = loss_of_lock_total
 
     def _cleanup_runtime(self):
         if self.monitor_receiver is not None:
@@ -1248,6 +1261,7 @@ class GNSSSdrDecoder(BaseDecoderProcess):
             "udp_events_emitted": 0,
             "udp_events_suppressed": 0,
             "activity_heartbeats_emitted": 0,
+            "loss_of_lock_total": 0,
             "data_messages_out": 0,
             "last_activity": None,
             "errors": 0,

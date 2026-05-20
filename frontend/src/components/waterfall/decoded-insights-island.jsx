@@ -467,11 +467,15 @@ const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
                 hasPvt: false,
                 packetsPerSec: 0,
                 monitorObsPerSec: 0,
+                lossOfLockTotal: 0,
+                lossOfLockDelta: 0,
             };
         }
 
         const packetsPerSec = toFiniteNumber(latest.output?.udp_packets_per_sec) || 0;
         const monitorObsPerSec = toFiniteNumber(latest.output?.monitor_observations_per_sec) || 0;
+        const lossOfLockTotal = toFiniteNumber(latest.output?.loss_of_lock_total) || 0;
+        const lossOfLockDelta = toFiniteNumber(latest.output?.loss_of_lock_delta) || 0;
         const lastSeenMs = latest.timestampMs;
         const fresh = (Date.now() - lastSeenMs) <= 3500;
         const active = fresh && (Boolean(latest.output?.has_activity) || packetsPerSec > 0 || monitorObsPerSec > 0);
@@ -483,6 +487,8 @@ const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
             hasPvt: Boolean(latest.output?.has_pvt),
             packetsPerSec,
             monitorObsPerSec,
+            lossOfLockTotal,
+            lossOfLockDelta,
         };
     }, [outputs]);
 
@@ -1038,6 +1044,8 @@ const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
                                     <Box component="span">acq: <Box component="span" sx={{ fontWeight: 700 }}>{gnssStatusStats.acquiredSatCount}</Box></Box>
                                     <Box component="span" sx={{ opacity: 0.55 }}>•</Box>
                                     <Box component="span">lost: <Box component="span" sx={{ fontWeight: 700 }}>{gnssStatusStats.lostSatCount}</Box></Box>
+                                    <Box component="span" sx={{ opacity: 0.55 }}>•</Box>
+                                    <Box component="span">loss ev: <Box component="span" sx={{ fontWeight: 700 }}>{gnssActivity.lossOfLockTotal}</Box></Box>
                                     <Box component="span" sx={{ opacity: 0.55 }}>•</Box>
                                     <Box component="span">ev: <Box component="span" sx={{ fontWeight: 700 }}>{gnssEventCount}</Box></Box>
                                     <Box component="span" sx={{ opacity: 0.55 }}>•</Box>
