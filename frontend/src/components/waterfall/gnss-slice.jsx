@@ -53,7 +53,7 @@ function getGnssFixStatusFromOutput(output) {
 
 const initialState = {
     decodedInsightsActiveTab: 'packets',
-    gnssSatellitesSortModel: [{ field: 'lastSeen', sort: 'desc' }],
+    gnssSatellitesSortModel: [{ field: 'satelliteId', sort: 'asc' }],
     // Runtime GNSS lifecycle for the decoded island summary.
     gnssFixLifecycle: {
         currentStatus: 'NO DATA',
@@ -73,10 +73,6 @@ export const gnssSlice = createSlice({
             state.decodedInsightsActiveTab = action.payload === 'gnss' ? 'gnss' : 'packets';
         },
         setGnssSatellitesSortModel: (state, action) => {
-            if (!Array.isArray(action.payload)) {
-                state.gnssSatellitesSortModel = [{ field: 'lastSeen', sort: 'desc' }];
-                return;
-            }
             state.gnssSatellitesSortModel = action.payload;
         },
         updateGnssFixLifecycleFromOutput: (state, action) => {

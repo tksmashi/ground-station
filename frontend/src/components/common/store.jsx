@@ -62,19 +62,6 @@ const storage = storageEngine?.default ?? storageEngine;
 const waterfallPersistConfig = {
     key: 'waterfall',
     storage,
-    // Do not rehydrate GNSS summary lifecycle fields; this panel must reflect live runtime data only.
-    migrate: (state) => {
-        if (!state || typeof state !== 'object') {
-            return Promise.resolve(state);
-        }
-        const migratedState = { ...state };
-        // Moved into dedicated gnss slice.
-        delete migratedState.decodedInsightsActiveTab;
-        delete migratedState.gnssSatellitesSortModel;
-        // Runtime-only lifecycle summary should not survive refresh.
-        delete migratedState.gnssFixLifecycle;
-        return Promise.resolve(migratedState);
-    },
     whitelist: ['centerFrequency', 'colorMap', 'dbRange', 'gain', 'sampleRate', 'showRightSideWaterFallAccessories',
         'showLeftSideWaterFallAccessories', 'selectedAntenna', 'selectedSDRId', 'selectedOffsetMode',
         'selectedOffsetValue', 'fftAveraging', 'showRotatorDottedLines', 'autoScalePreset', 'expandedPanels',

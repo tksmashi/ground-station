@@ -220,9 +220,7 @@ const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
         shallowEqual
     );
     const activeTab = decodedInsightsActiveTab === 'gnss' ? 'gnss' : 'packets';
-    const gnssSortModel = Array.isArray(gnssSatellitesSortModel)
-        ? gnssSatellitesSortModel
-        : [{ field: 'lastSeen', sort: 'desc' }];
+    const gnssSortModel = gnssSatellitesSortModel;
 
     const formatTimestamp = useCallback((value) => {
         if (!value) return '-';
