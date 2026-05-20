@@ -406,8 +406,8 @@ export const SSTV_PARAMETERS = {
  */
 export const GNSS_PARAMETERS = {
     gnss_sample_rate: {
-        label: 'Input Sample Rate',
-        description: 'Sample rate fed to GNSS-SDR after optional decimation',
+        label: 'GNSS Processing Rate',
+        description: 'Target rate fed to GNSS-SDR. If SDR rate is higher, IQ is integer-downsampled after filtering (e.g., 4.0 -> 2.0 MS/s = /2). If SDR rate is lower, no upsampling is applied.',
         type: 'select',
         default: 4000000,
         options: [
