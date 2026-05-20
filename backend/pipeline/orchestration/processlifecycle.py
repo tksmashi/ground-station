@@ -474,6 +474,8 @@ class ProcessLifecycleManager:
                 "decoders": {},  # Will store decoder threads per session (SSTV, AFSK, Morse, etc.)
                 "fft_stats": {},  # Latest stats from FFT processor
                 "device": sdr_device,  # Store device info for runtime snapshots
+                # Keep full applied SDR config for change detection in update_configuration().
+                "config": dict(config),
             }
 
             # Send initial configuration
@@ -645,12 +647,16 @@ class ProcessLifecycleManager:
 
         process_info = self.processes[sdr_id]
 
-        # Check if sample rate or center frequency is changing
+        # Check if sample rate or center frequency is changing.
+        # Compare against the effective full config (old config merged with incoming partial update)
+        # so gain-only patches never look like sample-rate/center-frequency changes.
         old_config = process_info.get("config", {})
+        effective_config = dict(old_config)
+        effective_config.update(config)
         old_sample_rate = old_config.get("sample_rate")
-        new_sample_rate = config.get("sample_rate")
+        new_sample_rate = effective_config.get("sample_rate")
         old_center_freq = old_config.get("center_freq")
-        new_center_freq = config.get("center_freq")
+        new_center_freq = effective_config.get("center_freq")
 
         # If sample rate OR center frequency changed, flush all queues
         # Note: Treat None -> value (or value -> None) as a change as well so that
@@ -725,8 +731,8 @@ class ProcessLifecycleManager:
         # Send configuration to the process
         process_info["config_queue"].put(config)
 
-        # Store the new config for future comparisons
-        process_info["config"] = config
+        # Store the full effective config for future comparisons.
+        process_info["config"] = effective_config
 
         self.logger.info(f"Sent configuration update to SDR process for device {sdr_id}")
 
