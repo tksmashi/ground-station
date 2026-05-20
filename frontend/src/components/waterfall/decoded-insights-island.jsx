@@ -457,27 +457,6 @@ const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
             },
         },
         {
-            field: 'lastUtcTime',
-            headerName: 'UTC',
-            minWidth: 150,
-            flex: 1,
-            renderCell: (params) => (
-                <Typography
-                    variant="caption"
-                    sx={{
-                        color: 'text.secondary',
-                        fontFamily: 'monospace',
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        width: '100%',
-                    }}
-                >
-                    {String(params.value || '-')}
-                </Typography>
-            ),
-        },
-        {
             field: 'lastSeen',
             headerName: 'Last Seen',
             minWidth: 170,
