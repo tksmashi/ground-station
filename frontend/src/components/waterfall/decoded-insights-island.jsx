@@ -39,15 +39,6 @@ import {
     setGnssSatellitesSortModel,
 } from './gnss-slice.jsx';
 
-const CONSTELLATION_BY_CODE = {
-    G: 'GPS',
-    E: 'GALILEO',
-    R: 'GLONASS',
-    C: 'BEIDOU',
-    B: 'BEIDOU',
-    J: 'QZSS',
-};
-
 const CONSTELLATION_OPERATOR_META = {
     GPS: { flag: '🇺🇸', label: 'United States' },
     GLONASS: { flag: '🇷🇺', label: 'Russia' },
@@ -55,103 +46,6 @@ const CONSTELLATION_OPERATOR_META = {
     QZSS: { flag: '🇯🇵', label: 'Japan' },
     GALILEO: { flag: '🇪🇺', label: 'European Union' },
 };
-
-function normalizeConstellation(value) {
-    if (!value) return '';
-    const raw = String(value).trim();
-    const upper = raw.toUpperCase();
-    if (CONSTELLATION_BY_CODE[upper]) {
-        return CONSTELLATION_BY_CODE[upper];
-    }
-    if (upper === 'GALILEO') return 'GALILEO';
-    if (upper === 'GLONASS') return 'GLONASS';
-    if (upper === 'BEIDOU') return 'BEIDOU';
-    if (upper === 'GPS') return 'GPS';
-    if (upper === 'QZSS') return 'QZSS';
-    return raw;
-}
-
-function parsePrnValue(value) {
-    if (value === null || value === undefined) return null;
-    const match = String(value).toUpperCase().match(/(\d{1,3})/);
-    if (!match) return null;
-    const parsed = Number(match[1]);
-    return Number.isFinite(parsed) ? parsed : null;
-}
-
-function extractChannel(output) {
-    if (output?.channel !== undefined && output?.channel !== null) {
-        const parsed = Number(output.channel);
-        return Number.isFinite(parsed) ? parsed : null;
-    }
-    const message = String(output?.message || '');
-    const match = message.match(/channel\s+(\d+)/i);
-    if (!match) return null;
-    const parsed = Number(match[1]);
-    return Number.isFinite(parsed) ? parsed : null;
-}
-
-function extractSatelliteIdentity(output) {
-    if (!output) return null;
-
-    const code = String(output.satellite_system || '').trim().toUpperCase();
-    const prnFromFields = parsePrnValue(output.satellite_prn);
-    if (code && Number.isFinite(prnFromFields)) {
-        const constellation = normalizeConstellation(code);
-        return {
-            constellation,
-            prn: prnFromFields,
-        };
-    }
-
-    const satelliteText = String(output.satellite || '');
-    const prnNameMatch = satelliteText.match(/([A-Za-z]+)\s+PRN\s+([A-Za-z]?\d+)/i);
-    if (prnNameMatch) {
-        const parsedPrn = parsePrnValue(prnNameMatch[2]);
-        if (!Number.isFinite(parsedPrn)) {
-            return null;
-        }
-        return {
-            constellation: normalizeConstellation(prnNameMatch[1]),
-            prn: parsedPrn,
-        };
-    }
-
-    const message = String(output.message || '');
-    const acqMatch = message.match(/for satellite\s+([A-Z])\s+(\d+)/i);
-    if (acqMatch) {
-        return {
-            constellation: normalizeConstellation(acqMatch[1]),
-            prn: parsePrnValue(acqMatch[2]),
-        };
-    }
-
-    const trackingMatch = message.match(/for satellite\s+([A-Za-z]+)\s+PRN\s+([A-Za-z]?\d+)/i);
-    if (trackingMatch) {
-        const parsedPrn = parsePrnValue(trackingMatch[2]);
-        if (!Number.isFinite(parsedPrn)) {
-            return null;
-        }
-        return {
-            constellation: normalizeConstellation(trackingMatch[1]),
-            prn: parsedPrn,
-        };
-    }
-
-    return null;
-}
-
-function getStateForEvent(eventType, message, fallbackState = 'detected') {
-    const normalizedMessage = String(message || '').toLowerCase();
-    if (eventType === 'acquisition') return 'acquired';
-    if (eventType === 'lost') return 'lost';
-    if (eventType === 'tracking' || eventType === 'nmea' || eventType === 'nmea_gga' || eventType === 'nmea_rmc') {
-        return 'tracking';
-    }
-    if (normalizedMessage.includes('loss of lock')) return 'lost';
-    if (normalizedMessage.includes('idle state')) return 'idle';
-    return fallbackState;
-}
 
 function toFiniteNumber(value) {
     const parsed = Number(value);
@@ -210,6 +104,7 @@ const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
         gridEditable,
         decodedInsightsActiveTab,
         gnssSatellitesSortModel,
+        gnssSatellitesById,
         gnssReceiverSnapshot,
         gnssActivitySnapshot,
         gnssFixQualityTimeline,
@@ -220,6 +115,7 @@ const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
             gridEditable: state.waterfall.gridEditable,
             decodedInsightsActiveTab: state.gnss.decodedInsightsActiveTab,
             gnssSatellitesSortModel: state.gnss.gnssSatellitesSortModel,
+            gnssSatellitesById: state.gnss.gnssSatellitesById,
             gnssReceiverSnapshot: state.gnss.receiverSnapshot,
             gnssActivitySnapshot: state.gnss.activitySnapshot,
             gnssFixQualityTimeline: state.gnss.gnssFixQualityTimeline,
@@ -247,100 +143,13 @@ const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
         });
     }, [timezone, locale]);
 
-    const { satelliteRows } = useMemo(() => {
-        const gnssOutputs = outputs
-            .filter((item) => item?.type === 'decoder-output' && item?.decoder_type === 'gnss')
-            .map((item) => ({
-                timestampMs: Number(item.timestamp) * 1000,
-                output: item.output || {},
-            }))
-            .filter((item) => Number.isFinite(item.timestampMs))
-            .sort((a, b) => a.timestampMs - b.timestampMs);
-
-        const rowsById = new Map();
-
-        for (const item of gnssOutputs) {
-            const output = item.output || {};
-            const identity = extractSatelliteIdentity(output);
-            if (!identity || !identity.constellation || !Number.isFinite(identity.prn)) {
-                continue;
-            }
-
-            const id = `${identity.constellation}-${identity.prn}`;
-            const eventType = String(output.event || 'event');
-            const message = String(output.message || '');
-            const eventState = getStateForEvent(eventType, message);
-            const channel = extractChannel(output);
-
-            if (!rowsById.has(id)) {
-                rowsById.set(id, {
-                    id,
-                    satelliteId: `${identity.constellation} ${String(identity.prn).padStart(2, '0')}`,
-                    constellation: identity.constellation,
-                    prn: identity.prn,
-                    state: eventState,
-                    eventCount: 0,
-                    acquisitionCount: 0,
-                    trackingCount: 0,
-                    nmeaCount: 0,
-                    firstSeen: item.timestampMs,
-                    lastSeen: item.timestampMs,
-                    lastChannel: channel,
-                    lastEvent: eventType,
-                    lastMessage: message || '-',
-                    latitude: null,
-                    longitude: null,
-                    altitudeM: null,
-                    fixQuality: null,
-                    matchedNorad: null,
-                    matchedName: '-',
-                    events: [],
-                });
-            }
-
-            const row = rowsById.get(id);
-            row.eventCount += 1;
-            row.firstSeen = Math.min(row.firstSeen, item.timestampMs);
-            row.lastSeen = Math.max(row.lastSeen, item.timestampMs);
-            row.lastChannel = channel ?? row.lastChannel;
-            row.lastEvent = eventType;
-            row.lastMessage = message || row.lastMessage;
-            row.state = eventState || row.state;
-
-            if (eventType === 'acquisition') row.acquisitionCount += 1;
-            if (eventType === 'tracking') row.trackingCount += 1;
-            if (eventType === 'nmea' || eventType === 'nmea_gga' || eventType === 'nmea_rmc') row.nmeaCount += 1;
-
-            if (output.latitude !== undefined && output.latitude !== null) row.latitude = output.latitude;
-            if (output.longitude !== undefined && output.longitude !== null) row.longitude = output.longitude;
-            if (output.altitude_m !== undefined && output.altitude_m !== null) row.altitudeM = output.altitude_m;
-            if (output.fix_quality !== undefined && output.fix_quality !== null) row.fixQuality = output.fix_quality;
-            const matchedNorad = toFiniteNumber(output.satellite_norad_id);
-            if (matchedNorad !== null) {
-                row.matchedNorad = matchedNorad;
-            }
-            if (String(output.satellite_name || '').trim()) {
-                row.matchedName = String(output.satellite_name).trim();
-            }
-
-            row.events.push({
-                timestampMs: item.timestampMs,
-                eventType,
-                state: eventState,
-                channel,
-                message: message || '-',
-            });
-        }
-
-        const rows = Array.from(rowsById.values()).sort((a, b) => b.lastSeen - a.lastSeen);
-        for (const row of rows) {
-            row.events.sort((a, b) => b.timestampMs - a.timestampMs);
-        }
-
-        return {
-            satelliteRows: rows,
-        };
-    }, [outputs]);
+    const satelliteRows = useMemo(() => {
+        return Object.values(gnssSatellitesById || {}).sort((a, b) => {
+            const aSeen = Number(a?.lastSeen) || 0;
+            const bSeen = Number(b?.lastSeen) || 0;
+            return bSeen - aSeen;
+        });
+    }, [gnssSatellitesById]);
 
     const packetOutputCount = useMemo(() => {
         return outputs.filter(
@@ -404,6 +213,7 @@ const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
             altitudeM: fix.altitudeM ?? null,
             fixQuality: fix.fixQuality ?? null,
             satellites: fix.satellites ?? null,
+            utcTime: fix.utcTime ?? null,
             status: hasCoords || hasFixQuality ? 'FIX' : (fix.lastUpdateMs ? 'NO FIX' : 'NO DATA'),
         };
     }, [gnssReceiverSnapshot]);
@@ -613,6 +423,59 @@ const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
             flex: 0.45,
             align: 'center',
             headerAlign: 'center',
+        },
+        {
+            field: 'lastCn0DbHz',
+            headerName: 'C/N0',
+            minWidth: 95,
+            flex: 0.6,
+            align: 'center',
+            headerAlign: 'center',
+            renderCell: (params) => {
+                const value = toFiniteNumber(params.value);
+                return (
+                    <Typography variant="caption" sx={{ color: 'text.secondary', fontFamily: 'monospace' }}>
+                        {value !== null ? value.toFixed(1) : '-'}
+                    </Typography>
+                );
+            },
+        },
+        {
+            field: 'lastCarrierDopplerHz',
+            headerName: 'Doppler Hz',
+            minWidth: 115,
+            flex: 0.72,
+            align: 'center',
+            headerAlign: 'center',
+            renderCell: (params) => {
+                const value = toFiniteNumber(params.value);
+                return (
+                    <Typography variant="caption" sx={{ color: 'text.secondary', fontFamily: 'monospace' }}>
+                        {value !== null ? value.toFixed(1) : '-'}
+                    </Typography>
+                );
+            },
+        },
+        {
+            field: 'lastUtcTime',
+            headerName: 'UTC',
+            minWidth: 150,
+            flex: 1,
+            renderCell: (params) => (
+                <Typography
+                    variant="caption"
+                    sx={{
+                        color: 'text.secondary',
+                        fontFamily: 'monospace',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        width: '100%',
+                    }}
+                >
+                    {String(params.value || '-')}
+                </Typography>
+            ),
         },
         {
             field: 'lastSeen',
@@ -874,6 +737,9 @@ const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
                                         {`Pos: ${receiverFix.latitude !== null && receiverFix.longitude !== null ? `${receiverFix.latitude.toFixed(6)}, ${receiverFix.longitude.toFixed(6)}` : '-'} | Alt: ${receiverFix.altitudeM !== null ? `${receiverFix.altitudeM.toFixed(1)} m` : '-'}`}
                                     </Typography>
                                     <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.66rem', lineHeight: 1.2, fontFamily: 'monospace' }}>
+                                        {`UTC: ${receiverFix.utcTime || '-'}`}
+                                    </Typography>
+                                    <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.66rem', lineHeight: 1.2, fontFamily: 'monospace' }}>
                                         {`Fix now ${currentFixElapsedMs !== null ? formatElapsedDuration(currentFixElapsedMs) : '-'} | Acq ${acquiredAgoMs !== null ? `${formatElapsedDuration(acquiredAgoMs)} ago` : '-'} | Lost ${lostAgoMs !== null ? `${formatElapsedDuration(lostAgoMs)} ago` : '-'} | Last fix ${lastFixAcquiredAgoMs !== null ? `${formatElapsedDuration(lastFixAcquiredAgoMs)} ago` : '-'}`}
                                     </Typography>
                                     <Typography
@@ -911,11 +777,19 @@ const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>
                                                     {`Last seen: ${formatTimestamp(selectedSatellite.lastSeen)}`}
                                                 </Typography>
+                                                {(selectedSatellite.matchedNorad !== null || selectedSatellite.matchedName !== '-') && (
+                                                    <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                                                        {`Resolved: ${selectedSatellite.matchedName !== '-' ? selectedSatellite.matchedName : 'Unknown'}${selectedSatellite.matchedNorad !== null ? ` (${selectedSatellite.matchedNorad})` : ''}`}
+                                                    </Typography>
+                                                )}
                                                 {(selectedSatellite.latitude !== null && selectedSatellite.longitude !== null) && (
                                                     <Typography variant="caption" sx={{ color: 'text.secondary' }}>
                                                         {`Position: ${selectedSatellite.latitude.toFixed(6)}, ${selectedSatellite.longitude.toFixed(6)}${selectedSatellite.altitudeM !== null ? ` alt ${selectedSatellite.altitudeM.toFixed(1)}m` : ''}`}
                                                     </Typography>
                                                 )}
+                                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                                                    {`Signal: C/N0 ${toFiniteNumber(selectedSatellite.lastCn0DbHz) !== null ? toFiniteNumber(selectedSatellite.lastCn0DbHz).toFixed(1) : '-'} | Doppler ${toFiniteNumber(selectedSatellite.lastCarrierDopplerHz) !== null ? toFiniteNumber(selectedSatellite.lastCarrierDopplerHz).toFixed(1) : '-'} Hz | UTC ${selectedSatellite.lastUtcTime || '-'}`}
+                                                </Typography>
                                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>
                                                     {`Recent events:`}
                                                 </Typography>
@@ -931,7 +805,7 @@ const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
                                                             textOverflow: 'ellipsis',
                                                         }}
                                                     >
-                                                        {`${formatTimestamp(event.timestampMs)} | ${String(event.eventType).toUpperCase()} | ${event.message}`}
+                                                        {`${formatTimestamp(event.timestampMs)} | ${String(event.eventType).toUpperCase()} | ${event.message}${toFiniteNumber(event.cn0DbHz) !== null ? ` | C/N0 ${toFiniteNumber(event.cn0DbHz).toFixed(1)}` : ''}${toFiniteNumber(event.carrierDopplerHz) !== null ? ` | DOP ${toFiniteNumber(event.carrierDopplerHz).toFixed(1)}Hz` : ''}${event.utcTime ? ` | UTC ${event.utcTime}` : ''}`}
                                                     </Typography>
                                                 ))}
                                             </Box>

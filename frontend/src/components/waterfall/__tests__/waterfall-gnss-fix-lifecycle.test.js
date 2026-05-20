@@ -55,7 +55,17 @@ describe('waterfall gnss fix lifecycle', () => {
             lastFixDurationMs: null,
             lastSignalAtMs: null,
         });
+        expect(state.receiverSnapshot).toEqual({
+            lastUpdateMs: null,
+            latitude: null,
+            longitude: null,
+            altitudeM: null,
+            fixQuality: null,
+            satellites: null,
+            utcTime: null,
+        });
         expect(state.gnssFixQualityTimeline).toEqual([]);
+        expect(state.gnssSatellitesById).toEqual({});
     });
 
     it('keeps previous closed-fix acquisition after a new fix starts', () => {
@@ -191,5 +201,39 @@ describe('waterfall gnss fix lifecycle', () => {
         expect(state.gnssFixQualityTimeline).toEqual([
             { timestampMs: 2_000_000, quality: 3 },
         ]);
+    });
+
+    it('keeps per-satellite Doppler, C/N0, and UTC telemetry in GNSS runtime cache', () => {
+        let state = reducer(undefined, { type: '@@INIT' });
+
+        state = reducer(state, updateGnssFixLifecycleFromOutput({
+            decoder_type: 'gnss',
+            timestamp: 100,
+            output: {
+                event: 'tracking',
+                satellite_system: 'G',
+                satellite_prn: 12,
+                channel: 3,
+                cn0_db_hz: 41.75,
+                carrier_doppler_hz: -1820.5,
+                utc_time: '2026-05-20T10:15:30Z',
+                message: 'TRACKING G12',
+            },
+        }));
+
+        const sat = state.gnssSatellitesById['GPS-12'];
+        expect(sat).toBeTruthy();
+        expect(sat.lastCn0DbHz).toBeCloseTo(41.75, 6);
+        expect(sat.lastCarrierDopplerHz).toBeCloseTo(-1820.5, 6);
+        expect(sat.lastUtcTime).toBe('2026-05-20T10:15:30Z');
+        expect(sat.lastChannel).toBe(3);
+        expect(sat.trackingCount).toBe(1);
+        expect(sat.events[0]).toMatchObject({
+            eventType: 'tracking',
+            cn0DbHz: 41.75,
+            carrierDopplerHz: -1820.5,
+            utcTime: '2026-05-20T10:15:30Z',
+        });
+        expect(state.receiverSnapshot.utcTime).toBe('2026-05-20T10:15:30Z');
     });
 });

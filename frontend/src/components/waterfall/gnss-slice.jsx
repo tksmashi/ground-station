@@ -22,10 +22,114 @@ import { createSlice } from '@reduxjs/toolkit';
 const FIX_QUALITY_TIMELINE_WINDOW_MS = 30 * 60 * 1000;
 const FIX_QUALITY_TIMELINE_MAX_POINTS = 4000;
 const FIX_QUALITY_TIMELINE_MIN_APPEND_MS = 15 * 1000;
+const GNSS_SATELLITE_EVENT_HISTORY_MAX = 40;
+
+const CONSTELLATION_BY_CODE = {
+    G: 'GPS',
+    E: 'GALILEO',
+    R: 'GLONASS',
+    C: 'BEIDOU',
+    B: 'BEIDOU',
+    J: 'QZSS',
+};
 
 function toFiniteNumber(value) {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeConstellation(value) {
+    if (!value) return '';
+    const raw = String(value).trim();
+    const upper = raw.toUpperCase();
+    if (CONSTELLATION_BY_CODE[upper]) {
+        return CONSTELLATION_BY_CODE[upper];
+    }
+    if (upper === 'GALILEO' || upper === 'GLONASS' || upper === 'BEIDOU' || upper === 'GPS' || upper === 'QZSS') {
+        return upper;
+    }
+    return raw;
+}
+
+function parsePrnValue(value) {
+    if (value === null || value === undefined) return null;
+    const match = String(value).toUpperCase().match(/(\d{1,3})/);
+    if (!match) return null;
+    const parsed = Number(match[1]);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function extractChannel(output) {
+    if (output?.channel !== undefined && output?.channel !== null) {
+        const parsed = Number(output.channel);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+    const message = String(output?.message || '');
+    const match = message.match(/channel\s+(\d+)/i);
+    if (!match) return null;
+    const parsed = Number(match[1]);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function extractSatelliteIdentity(output) {
+    if (!output) return null;
+
+    const code = String(output.satellite_system || '').trim().toUpperCase();
+    const prnFromFields = parsePrnValue(output.satellite_prn);
+    if (code && Number.isFinite(prnFromFields)) {
+        return {
+            constellation: normalizeConstellation(code),
+            prn: prnFromFields,
+        };
+    }
+
+    const satelliteText = String(output.satellite || '');
+    const prnNameMatch = satelliteText.match(/([A-Za-z]+)\s+PRN\s+([A-Za-z]?\d+)/i);
+    if (prnNameMatch) {
+        const parsedPrn = parsePrnValue(prnNameMatch[2]);
+        if (!Number.isFinite(parsedPrn)) {
+            return null;
+        }
+        return {
+            constellation: normalizeConstellation(prnNameMatch[1]),
+            prn: parsedPrn,
+        };
+    }
+
+    const message = String(output.message || '');
+    const acqMatch = message.match(/for satellite\s+([A-Z])\s+(\d+)/i);
+    if (acqMatch) {
+        return {
+            constellation: normalizeConstellation(acqMatch[1]),
+            prn: parsePrnValue(acqMatch[2]),
+        };
+    }
+
+    const trackingMatch = message.match(/for satellite\s+([A-Za-z]+)\s+PRN\s+([A-Za-z]?\d+)/i);
+    if (trackingMatch) {
+        const parsedPrn = parsePrnValue(trackingMatch[2]);
+        if (!Number.isFinite(parsedPrn)) {
+            return null;
+        }
+        return {
+            constellation: normalizeConstellation(trackingMatch[1]),
+            prn: parsedPrn,
+        };
+    }
+
+    return null;
+}
+
+function getStateForEvent(eventType, message, fallbackState = 'detected') {
+    const normalizedMessage = String(message || '').toLowerCase();
+    if (eventType === 'acquisition') return 'acquired';
+    if (eventType === 'lost') return 'lost';
+    if (eventType === 'tracking' || eventType === 'nmea' || eventType === 'nmea_gga' || eventType === 'nmea_rmc') {
+        return 'tracking';
+    }
+    if (normalizedMessage.includes('loss of lock')) return 'lost';
+    if (normalizedMessage.includes('idle state')) return 'idle';
+    return fallbackState;
 }
 
 function getGnssFixStatusFromOutput(output) {
@@ -73,6 +177,7 @@ const initialState = {
         altitudeM: null,
         fixQuality: null,
         satellites: null,
+        utcTime: null,
     },
     activitySnapshot: {
         lastHeartbeatMs: null,
@@ -95,6 +200,9 @@ const initialState = {
     },
     // UI-only rolling fix quality samples for the last 30 minutes.
     gnssFixQualityTimeline: [],
+    // Runtime per-satellite GNSS cache keyed by "<CONSTELLATION>-<PRN>".
+    // Keeps Doppler/CN0/time visible independently of decoders.outputs ring-buffer trimming.
+    gnssSatellitesById: {},
 };
 
 export const gnssSlice = createSlice({
@@ -116,6 +224,7 @@ export const gnssSlice = createSlice({
                 altitudeM: null,
                 fixQuality: null,
                 satellites: null,
+                utcTime: null,
             };
             state.activitySnapshot = {
                 lastHeartbeatMs: null,
@@ -136,6 +245,7 @@ export const gnssSlice = createSlice({
                 lastSignalAtMs: null,
             };
             state.gnssFixQualityTimeline = [];
+            state.gnssSatellitesById = {};
         },
         updateGnssFixLifecycleFromOutput: (state, action) => {
             const payload = action.payload || {};
@@ -163,7 +273,6 @@ export const gnssSlice = createSlice({
                 return;
             }
 
-            const receiver = state.receiverSnapshot;
             const latitude = toFiniteNumber(output.latitude);
             const longitude = toFiniteNumber(output.longitude);
             const altitudeM = toFiniteNumber(output.altitude_m);
@@ -171,14 +280,103 @@ export const gnssSlice = createSlice({
             const hasFixQualityField = output.fix_quality !== undefined
                 && output.fix_quality !== null
                 && String(output.fix_quality).trim() !== '';
+            const fixQualityValue = hasFixQualityField ? String(output.fix_quality).trim() : null;
+            const cn0DbHz = toFiniteNumber(output.cn0_db_hz);
+            const carrierDopplerHz = toFiniteNumber(output.carrier_doppler_hz);
+            const matchedNorad = toFiniteNumber(output.satellite_norad_id);
+            const matchedName = String(output.satellite_name || '').trim();
+            const utcTime = typeof output.utc_time === 'string' && output.utc_time.trim()
+                ? output.utc_time.trim()
+                : null;
             const isNmea = eventType === 'nmea' || eventType === 'nmea_gga' || eventType === 'nmea_rmc';
+            const eventTypeLabel = eventType || 'event';
+            const message = String(output.message || '');
 
+            const identity = extractSatelliteIdentity(output);
+            if (identity && identity.constellation && Number.isFinite(identity.prn)) {
+                const id = `${identity.constellation}-${identity.prn}`;
+                if (!state.gnssSatellitesById[id]) {
+                    state.gnssSatellitesById[id] = {
+                        id,
+                        satelliteId: `${identity.constellation} ${String(identity.prn).padStart(2, '0')}`,
+                        constellation: identity.constellation,
+                        prn: identity.prn,
+                        state: 'detected',
+                        eventCount: 0,
+                        acquisitionCount: 0,
+                        trackingCount: 0,
+                        nmeaCount: 0,
+                        lostCount: 0,
+                        firstSeen: timestampMs,
+                        lastSeen: timestampMs,
+                        lastChannel: null,
+                        lastEvent: eventTypeLabel,
+                        lastMessage: '-',
+                        lastCn0DbHz: null,
+                        lastCarrierDopplerHz: null,
+                        lastUtcTime: null,
+                        latitude: null,
+                        longitude: null,
+                        altitudeM: null,
+                        fixQuality: null,
+                        matchedNorad: null,
+                        matchedName: '-',
+                        events: [],
+                    };
+                }
+
+                const row = state.gnssSatellitesById[id];
+                const channel = extractChannel(output);
+                const eventState = getStateForEvent(eventTypeLabel, message, row.state);
+
+                row.eventCount += 1;
+                row.firstSeen = Math.min(row.firstSeen, timestampMs);
+                row.lastSeen = Math.max(row.lastSeen, timestampMs);
+                row.lastChannel = channel ?? row.lastChannel;
+                row.lastEvent = eventTypeLabel;
+                row.lastMessage = message || row.lastMessage;
+                row.state = eventState;
+
+                if (eventTypeLabel === 'acquisition') row.acquisitionCount += 1;
+                if (eventTypeLabel === 'tracking') row.trackingCount += 1;
+                if (eventTypeLabel === 'lost') row.lostCount += 1;
+                if (isNmea) row.nmeaCount += 1;
+
+                if (latitude !== null) row.latitude = latitude;
+                if (longitude !== null) row.longitude = longitude;
+                if (altitudeM !== null) row.altitudeM = altitudeM;
+                if (fixQualityValue !== null) row.fixQuality = fixQualityValue;
+                if (matchedNorad !== null) row.matchedNorad = matchedNorad;
+                if (matchedName) row.matchedName = matchedName;
+                if (cn0DbHz !== null) row.lastCn0DbHz = cn0DbHz;
+                if (carrierDopplerHz !== null) row.lastCarrierDopplerHz = carrierDopplerHz;
+                if (utcTime !== null) row.lastUtcTime = utcTime;
+
+                row.events.unshift({
+                    timestampMs,
+                    eventType: eventTypeLabel,
+                    state: eventState,
+                    channel,
+                    message: message || '-',
+                    cn0DbHz,
+                    carrierDopplerHz,
+                    utcTime,
+                });
+                if (row.events.length > GNSS_SATELLITE_EVENT_HISTORY_MAX) {
+                    row.events = row.events.slice(0, GNSS_SATELLITE_EVENT_HISTORY_MAX);
+                }
+            }
+
+            const receiver = state.receiverSnapshot;
             if (latitude !== null) receiver.latitude = latitude;
             if (longitude !== null) receiver.longitude = longitude;
             if (altitudeM !== null) receiver.altitudeM = altitudeM;
             if (satellites !== null) receiver.satellites = satellites;
-            if (hasFixQualityField) {
-                receiver.fixQuality = String(output.fix_quality).trim();
+            if (fixQualityValue !== null) {
+                receiver.fixQuality = fixQualityValue;
+            }
+            if (utcTime !== null) {
+                receiver.utcTime = utcTime;
             }
 
             if (
@@ -188,6 +386,7 @@ export const gnssSlice = createSlice({
                 || altitudeM !== null
                 || satellites !== null
                 || hasFixQualityField
+                || utcTime !== null
             ) {
                 receiver.lastUpdateMs = timestampMs;
             }
@@ -196,7 +395,7 @@ export const gnssSlice = createSlice({
 
             // Track a compact rolling timeline for UI diagnostics.
             if (hasFixQualityField) {
-                const qualityValue = toFiniteNumber(output.fix_quality);
+                const qualityValue = toFiniteNumber(fixQualityValue);
                 if (qualityValue !== null) {
                     const timeline = state.gnssFixQualityTimeline;
                     const lastPoint = timeline.length > 0 ? timeline[timeline.length - 1] : null;
